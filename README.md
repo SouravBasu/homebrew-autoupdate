@@ -72,6 +72,35 @@ versioned formulae (`node@20`).
 Cannot be combined with `--leaves-only`. To change which packages are
 auto-upgraded, run `brew autoupdate delete` then start again with the new list.
 
+### Restart Apps and Services After Upgrades
+
+```sh
+brew autoupdate start 12h --upgrade \
+  --restart-apps="Raycast,Visual Studio Code,Docker" \
+  --restart-services=redis,com.example.agent
+```
+
+Restarts the specified macOS UI applications and/or background services after
+an autoupdate run upgrades one or more packages (skipped when everything is
+already up-to-date or when the run fails). Requires `--upgrade`.
+
+- **`--restart-apps=`**: Accepts comma-separated app names (e.g. `Raycast`,
+  `Visual Studio Code`), `.app` bundle names/paths (e.g.
+  `/Applications/Docker.app`), or bundle identifiers (e.g.
+  `com.microsoft.VSCode`). Running apps are snapshotted before `brew` runs:
+  - Apps that were running before the update and are still running afterward
+    are quit gracefully and relaunched in the background (`open -g`).
+  - Apps that were running before the update and were quit by Homebrew during a
+    cask upgrade are relaunched automatically.
+  - Apps that were not running before the update are left closed.
+- **`--restart-services=`**: Accepts comma-separated Homebrew service names
+  (restarted via `brew services restart`) and/or macOS `launchd` service labels
+  or domain targets such as `com.example.agent` or `gui/501/com.example.agent`
+  (restarted via `launchctl kickstart -k` when not matched in `brew services`).
+
+To change which apps or services are restarted, run `brew autoupdate delete`
+and then `brew autoupdate start` again with the updated options.
+
 ### Run at a specific time every day
 
 ```sh
@@ -113,6 +142,8 @@ Common start options:
   --leaves-only upgrades only top-level formulae.
   --greedy includes auto-updating casks.
   --sudo enables a GUI password prompt for cask upgrades.
+  --restart-apps=Raycast,Docker restarts running UI apps after upgrades.
+  --restart-services=redis,nginx restarts Homebrew or launchd services.
   --ac-only skips runs while the Mac is on battery power.
   --notify-on-error shows notifications only for failed runs.
   --no-notify disables notifications.
@@ -121,6 +152,8 @@ Examples:
   brew autoupdate start
   brew autoupdate start 12h --upgrade --cleanup --immediate
   brew autoupdate start 1d --upgrade --only=wget,node,firefox
+  brew autoupdate start 12h --upgrade --restart-apps=Raycast,Docker
+  brew autoupdate start 12h --upgrade --restart-services=redis
   brew autoupdate start 00:00 --upgrade --cleanup
   brew autoupdate logs --lines=50
   brew autoupdate logs --follow
@@ -171,6 +204,12 @@ time such as 00:00 to run daily at that specific time.
                                    dependencies.
       --only                       Upgrade only these formulae and/or casks
                                    (comma-separated). Requires --upgrade.
+      --restart-apps               Restart these macOS UI apps after upgrades if
+                                   they were running (comma-separated). Requires
+                                   --upgrade.
+      --restart-services           Restart these Homebrew or launchd services
+                                   after upgrades (comma-separated). Requires
+                                   --upgrade.
       --ac-only                    Run only while the Mac is connected to AC
                                    power.
       --notify-on-error            Notify only when an autoupdate run fails.

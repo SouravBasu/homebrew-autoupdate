@@ -36,6 +36,8 @@ class CommandTest < Minitest::Test
     assert_includes stdout, "Usage: brew autoupdate start"
     assert_includes stdout, "--upgrade"
     assert_includes stdout, "--cleanup"
+    assert_includes stdout, "--restart-apps"
+    assert_includes stdout, "--restart-services"
     assert_includes stdout, "--notify-on-error"
     assert_includes stdout, "--no-notify"
     refute_includes stdout, "--follow"
@@ -74,6 +76,14 @@ class CommandTest < Minitest::Test
     output, status = brew_autoupdate_error("start", "--only=wget")
     refute_predicate status, :success?
     assert_includes output, "`--only` cannot be passed without `--upgrade`."
+
+    output, status = brew_autoupdate_error("start", "--restart-apps=Raycast")
+    refute_predicate status, :success?
+    assert_includes output, "`--restart-apps` cannot be passed without `--upgrade`."
+
+    output, status = brew_autoupdate_error("start", "--restart-services=redis")
+    refute_predicate status, :success?
+    assert_includes output, "`--restart-services` cannot be passed without `--upgrade`."
 
     output, status = brew_autoupdate_error("start", "--upgrade", "--only=wget", "--leaves-only")
     refute_predicate status, :success?

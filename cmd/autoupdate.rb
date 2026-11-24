@@ -30,6 +30,8 @@ module Homebrew
             `--leaves-only` upgrades only top-level formulae.
             `--greedy` includes auto-updating casks.
             `--sudo` enables a GUI password prompt for cask upgrades.
+            `--restart-apps=Raycast,Docker` restarts running UI apps after upgrades.
+            `--restart-services=redis,nginx` restarts Homebrew or launchd services.
             `--ac-only` skips runs while the Mac is on battery power.
             `--notify-on-error` shows notifications only for failed runs.
             `--no-notify` disables notifications.
@@ -38,6 +40,8 @@ module Homebrew
             `brew autoupdate start`
             `brew autoupdate start 12h --upgrade --cleanup --immediate`
             `brew autoupdate start 1d --upgrade --only=wget,node,firefox`
+            `brew autoupdate start 12h --upgrade --restart-apps=Raycast,Docker`
+            `brew autoupdate start 12h --upgrade --restart-services=redis`
             `brew autoupdate start 00:00 --upgrade --cleanup`
             `brew autoupdate logs --lines=50`
             `brew autoupdate logs --follow`
@@ -79,6 +83,12 @@ module Homebrew
           comma_array "--only=",
                       description: "Upgrade only these formulae and/or casks (comma-separated). " \
                                    "Requires `--upgrade`."
+          comma_array "--restart-apps=",
+                      description: "Restart these macOS UI apps after upgrades if they were running " \
+                                   "(comma-separated). Requires `--upgrade`."
+          comma_array "--restart-services=",
+                      description: "Restart these Homebrew or `launchd` services after upgrades " \
+                                   "(comma-separated). Requires `--upgrade`."
           switch "--ac-only",
                  description: "Run only while the Mac is connected to AC power."
           switch "--notify-on-error",
@@ -153,6 +163,12 @@ module Homebrew
         case subcommand
         when :start
           raise UsageError, "`--only` cannot be passed without `--upgrade`." if args.only && !args.upgrade?
+          if args.restart_apps && !args.upgrade?
+            raise UsageError, "`--restart-apps` cannot be passed without `--upgrade`."
+          end
+          if args.restart_services && !args.upgrade?
+            raise UsageError, "`--restart-services` cannot be passed without `--upgrade`."
+          end
 
           interval = begin
             ::Autoupdate::Interval.parse(args.named.first)

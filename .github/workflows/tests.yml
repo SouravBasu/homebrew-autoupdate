@@ -26,9 +26,9 @@ jobs:
             ruby "$test"
           done
 
-      - name: Validate notifier sources
+      - name: Validate notifier and helper scripts
         run: |
-          bash -n notifier/notify.sh notifier/build.sh
+          bash -n notifier/notify.sh notifier/build.sh lib/autoupdate/restart.sh
           swift build
           test "$(cat VERSION)" = \
             "$(plutil -extract CFBundleShortVersionString raw notifier/brew-autoupdate.app/Contents/Info.plist)"

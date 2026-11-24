@@ -33,6 +33,9 @@ module Autoupdate
       end
     end
 
+    restart_apps = validate_restart_targets(args.restart_apps, :apps)
+    restart_services = validate_restart_targets(args.restart_services, :services)
+
     auto_args = "update"
     # Spacing at start of lines is deliberate. Don't undo.
     if args.upgrade?
@@ -161,20 +164,14 @@ module Autoupdate
       "always"
     end
 
-    script_contents = <<~EOS
-      #!/bin/sh
-      #{ac_only.chomp}
-      #{set_env}
-      run_log=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/brew-autoupdate.XXXXXX") || exit 1
-      trap '/bin/rm -f "$run_log"' EXIT
-
-      /bin/date
-      (#{Autoupdate::Core.brew} #{auto_args}) >"$run_log" 2>&1
-      status=$?
-      /bin/cat "$run_log"
-      #{Autoupdate::Notify.command(mode: notify_mode)}
-      exit "$status"
-    EOS
+    script_contents = build_updater_script(
+      ac_only:,
+      set_env:,
+      auto_args:,
+      notify_mode:,
+      restart_apps:,
+      restart_services:,
+    )
     FileUtils.mkpath(Autoupdate::Core.logs)
     FileUtils.mkpath(Autoupdate::Core.location)
 
@@ -300,5 +297,48 @@ module Autoupdate
 
   def shell_export(name, value)
     "export #{name}=#{Shellwords.escape(value)}"
+  end
+
+  def validate_restart_targets(raw_targets, kind)
+    return [] if raw_targets.nil?
+
+    case kind
+    when :apps
+      Autoupdate::Restart.normalize_apps(raw_targets)
+    when :services
+      Autoupdate::Restart.normalize_services(raw_targets)
+    end
+  rescue Autoupdate::Restart::InvalidTargetError => e
+    odie e.message
+  end
+
+  def build_updater_script(ac_only:, set_env:, auto_args:, notify_mode:, restart_apps: [], restart_services: [])
+    lines = [
+      "#!/bin/sh",
+      ac_only.chomp,
+      set_env,
+      'run_log=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/brew-autoupdate.XXXXXX") || exit 1',
+    ]
+
+    if restart_apps.any?
+      lines << 'restart_state=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/brew-autoupdate-restart.XXXXXX") || exit 1'
+      lines << "trap '/bin/rm -f \"$run_log\" \"$restart_state\"' EXIT"
+    else
+      lines << "trap '/bin/rm -f \"$run_log\"' EXIT"
+    end
+
+    lines << ""
+    lines << "/bin/date"
+    lines << Autoupdate::Restart.snapshot_command(apps: restart_apps) if restart_apps.any?
+    lines << "(#{Autoupdate::Core.brew} #{auto_args}) >\"$run_log\" 2>&1"
+    lines << "status=$?"
+    lines << '/bin/cat "$run_log"'
+    if restart_apps.any? || restart_services.any?
+      lines << Autoupdate::Restart.apply_command(apps: restart_apps, services: restart_services)
+    end
+    lines << Autoupdate::Notify.command(mode: notify_mode)
+    lines << 'exit "$status"'
+
+    "#{lines.join("\n")}\n"
   end
 end
