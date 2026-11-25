@@ -221,19 +221,58 @@ class RestartTest < Minitest::Test
     end
   end
 
-  def test_skips_restarts_when_nothing_was_upgraded
+  def test_when_nothing_upgraded_restarts_only_stopped_apps_and_services
     with_harness do |h|
+      drive_app = h.create_app_bundle("Google Drive.app")
+      chrome_app = h.create_app_bundle("Google Chrome.app")
+      h.write_lsappinfo(<<~LIST)
+        1) "Google Drive" ASN:0x0-0x1001:
+           bundleID="com.google.drivefs"
+           bundle path="#{drive_app}"
+           pid = 3100 token=[sess=100015 pid=3100] type="UIElement" flavor=3
+        2) "Google Chrome" ASN:0x0-0x2002:
+           bundleID="com.google.Chrome"
+           bundle path="#{chrome_app}"
+           pid = 3200 token=[sess=100015 pid=3200] type="Foreground" flavor=3
+      LIST
+      h.write_brew_services(<<~SERVICES)
+        Name       Status  User   File
+        redis      started sourav ~/Library/LaunchAgents/homebrew.mxcl.redis.plist
+        postgresql stopped sourav ~/Library/LaunchAgents/homebrew.mxcl.postgresql.plist
+      SERVICES
+
+      apps = ["Google Drive", "Google Chrome", "WhatsApp"]
+      _, snap_status = h.snapshot(apps: apps)
+      assert_predicate snap_status, :success?
+
+      # Google Drive stopped during a status-0 run with no upgrade lines; Chrome is still running.
+      h.write_lsappinfo(<<~LIST)
+        2) "Google Chrome" ASN:0x0-0x2002:
+           bundleID="com.google.Chrome"
+           bundle path="#{chrome_app}"
+           pid = 3200 token=[sess=100015 pid=3200] type="Foreground" flavor=3
+      LIST
       h.write_log(<<~LOG)
         ==> Updating Homebrew...
         Updated 1 tap (homebrew/core).
         Already up-to-date.
         Warning: Not upgrading wget, the latest version is already installed
       LOG
-      output, status = h.apply(exit_status: 0, services: ["redis"], apps: ["Raycast"])
+      output, status = h.apply(exit_status: 0, services: ["redis", "postgresql"], apps: apps)
 
       assert_predicate status, :success?, output
-      assert_includes output, "Skipping restarts: no packages were upgraded."
-      assert_empty h.recorded_calls
+      assert_includes output, "No packages were upgraded; ensuring configured apps and services are still running..."
+      assert_includes output, "Skipping service 'redis' (already running; no upgrades were applied)."
+      assert_includes output, "Restarting service 'postgresql' via brew services..."
+      assert_includes output, "Relaunching UI app 'Google Drive' (was running before update)..."
+      assert_includes output, "Skipping UI app 'Google Chrome' (still running; no upgrades were applied)."
+      assert_includes output, "Skipping UI app 'WhatsApp' (was not running before update)."
+
+      calls = h.recorded_calls
+      assert_includes calls, "brew:services restart postgresql"
+      assert_includes calls, "open:-g #{drive_app}"
+      refute_includes calls, "brew:services restart redis"
+      refute(calls.any? { |c| c.include?("Google Chrome") || c.include?("WhatsApp") })
     end
   end
 

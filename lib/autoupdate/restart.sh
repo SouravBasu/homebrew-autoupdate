@@ -424,13 +424,14 @@ main() {
         else
           printf "==> Restarting configured apps and services...\n"
         fi
-      elif [[ "${status}" -ne 0 ]]
-      then
-        only_if_stopped=1
-        printf "==> Homebrew autoupdate exited with status %s; ensuring configured apps and services are running...\n" "${status}"
       else
-        printf "Skipping restarts: no packages were upgraded.\n"
-        return 0
+        only_if_stopped=1
+        if [[ "${status}" -ne 0 ]]
+        then
+          printf "==> Homebrew autoupdate exited with status %s; ensuring configured apps and services are running...\n" "${status}"
+        else
+          printf "No packages were upgraded; ensuring configured apps and services are still running...\n"
+        fi
       fi
 
       if [[ "${#services[@]}" -gt 0 ]]
