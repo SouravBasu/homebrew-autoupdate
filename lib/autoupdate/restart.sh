@@ -209,6 +209,7 @@ launch_ui_app() {
 restart_ui_app() {
   local app="$1"
   local state_file="$2"
+  local only_if_stopped="${3:-0}"
 
   local pre_entry
   if ! pre_entry=$(lookup_snapshot_entry "${state_file}" "${app}")
@@ -230,6 +231,12 @@ restart_ui_app() {
 
   if [[ -n "${current_match}" ]]
   then
+    if [[ "${only_if_stopped}" -eq 1 ]]
+    then
+      printf "Skipping UI app '%s' (still running; no upgrades were applied).\n" "${app}"
+      return 0
+    fi
+
     local cur_pid cur_bundle_id cur_bundle_path
     cur_pid=$(tsv_field "${current_match}" 1)
     cur_bundle_id=$(tsv_field "${current_match}" 2)
@@ -260,7 +267,7 @@ load_brew_services() {
   BREW_SERVICES_LOADED=1
   if [[ -n "${BREW_BIN}" ]]
   then
-    BREW_SERVICES_LIST=$("${BREW_BIN}" services list 2>/dev/null | /usr/bin/awk 'NR > 1 && NF > 0 { print $1 }' || true)
+    BREW_SERVICES_LIST=$("${BREW_BIN}" services list 2>/dev/null | /usr/bin/awk 'NR > 1 && NF > 0 { gsub(/\033\[[0-9;]*[A-Za-z]/, ""); printf "%s\t%s\n", $1, $2 }' || true)
   fi
 }
 
@@ -275,11 +282,12 @@ match_brew_service() {
     short_name="${service##*/}"
   fi
 
-  local line
+  local line name
   while IFS= read -r line
   do
     [[ -n "${line}" ]] || continue
-    if [[ "${line}" == "${service}" ]] || [[ "${line}" == "${short_name}" ]]
+    name=$(tsv_field "${line}" 1)
+    if [[ "${name}" == "${service}" ]] || [[ "${name}" == "${short_name}" ]]
     then
       printf '%s\n' "${line}"
       return 0
@@ -291,10 +299,21 @@ match_brew_service() {
 
 restart_service() {
   local service="$1"
+  local only_if_stopped="${2:-0}"
 
-  local matched_brew_service
-  if matched_brew_service=$(match_brew_service "${service}")
+  local matched_entry
+  if matched_entry=$(match_brew_service "${service}")
   then
+    local matched_brew_service brew_status
+    matched_brew_service=$(tsv_field "${matched_entry}" 1)
+    brew_status=$(tsv_field "${matched_entry}" 2)
+
+    if [[ "${only_if_stopped}" -eq 1 ]] && { [[ "${brew_status}" == "started" ]] || [[ "${brew_status}" == "scheduled" ]]; }
+    then
+      printf "Skipping service '%s' (already running; no upgrades were applied).\n" "${service}"
+      return 0
+    fi
+
     printf "Restarting service '%s' via brew services...\n" "${service}"
     if ! "${BREW_BIN}" services restart "${matched_brew_service}"
     then
@@ -316,11 +335,17 @@ restart_service() {
       ;;
   esac
 
-  local target
+  local target print_output
   for target in "${candidates[@]}"
   do
-    if "${LAUNCHCTL_BIN}" print "${target}" >/dev/null 2>&1
+    if print_output=$("${LAUNCHCTL_BIN}" print "${target}" 2>/dev/null)
     then
+      if [[ "${only_if_stopped}" -eq 1 ]] && [[ "${print_output}" == *"state = running"* ]]
+      then
+        printf "Skipping service '%s' (already running; no upgrades were applied).\n" "${service}"
+        return 0
+      fi
+
       printf "Restarting service '%s' via launchctl (%s)...\n" "${service}" "${target}"
       if ! "${LAUNCHCTL_BIN}" kickstart -k "${target}"
       then
@@ -385,31 +410,35 @@ main() {
       fi
       ;;
     apply)
-      if [[ "${status}" -ne 0 ]]
-      then
-        printf "Skipping restarts: Homebrew autoupdate exited with status %s.\n" "${status}"
-        return 0
-      fi
-
-      if ! upgrades_occurred "${run_log}"
-      then
-        printf "Skipping restarts: no packages were upgraded.\n"
-        return 0
-      fi
-
       if [[ "${#services[@]}" -eq 0 ]] && [[ "${#apps[@]}" -eq 0 ]]
       then
         return 0
       fi
 
-      printf "==> Restarting configured apps and services...\n"
+      local only_if_stopped=0
+      if upgrades_occurred "${run_log}"
+      then
+        if [[ "${status}" -ne 0 ]]
+        then
+          printf "==> Homebrew autoupdate exited with status %s; restarting configured apps and services...\n" "${status}"
+        else
+          printf "==> Restarting configured apps and services...\n"
+        fi
+      elif [[ "${status}" -ne 0 ]]
+      then
+        only_if_stopped=1
+        printf "==> Homebrew autoupdate exited with status %s; ensuring configured apps and services are running...\n" "${status}"
+      else
+        printf "Skipping restarts: no packages were upgraded.\n"
+        return 0
+      fi
 
       if [[ "${#services[@]}" -gt 0 ]]
       then
         local service
         for service in "${services[@]}"
         do
-          restart_service "${service}"
+          restart_service "${service}" "${only_if_stopped}"
         done
       fi
 
@@ -418,7 +447,7 @@ main() {
         local app
         for app in "${apps[@]}"
         do
-          restart_ui_app "${app}" "${state_file}"
+          restart_ui_app "${app}" "${state_file}" "${only_if_stopped}"
         done
       fi
       ;;

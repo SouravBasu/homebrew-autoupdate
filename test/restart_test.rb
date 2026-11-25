@@ -102,14 +102,122 @@ class RestartTest < Minitest::Test
     assert_equal({ apps: [], services: [] }, parsed)
   end
 
-  def test_skips_restarts_when_autoupdate_failed
+  def test_restarts_apps_and_services_when_upgrade_run_fails
     with_harness do |h|
-      h.write_log("==> Upgrading 1 outdated package:\nfoo\n")
-      output, status = h.apply(exit_status: 1, services: ["redis"], apps: ["Raycast"])
+      drive_app = h.create_app_bundle("Google Drive.app")
+      chrome_app = h.create_app_bundle("Google Chrome.app")
+      h.write_lsappinfo(<<~LIST)
+        1) "Google Drive" ASN:0x0-0x1001:
+           bundleID="com.google.drivefs"
+           bundle path="#{drive_app}"
+           pid = 8100 token=[sess=100015 pid=8100] type="UIElement" flavor=3
+        2) "Google Chrome" ASN:0x0-0x2002:
+           bundleID="com.google.Chrome"
+           bundle path="#{chrome_app}"
+           pid = 8200 token=[sess=100015 pid=8200] type="Foreground" flavor=3
+      LIST
+      h.write_brew_services(<<~SERVICES)
+        Name  Status  User   File
+        redis stopped sourav ~/Library/LaunchAgents/homebrew.mxcl.redis.plist
+      SERVICES
+      h.write_launchctl_targets(["gui/501/com.example.agent"])
+
+      apps = ["Google Drive", "Google Chrome", "WhatsApp"]
+      _, snap_status = h.snapshot(apps: apps)
+      assert_predicate snap_status, :success?
+
+      # Simulate brew upgrade quitting Google Drive before failing, while Chrome stays running.
+      h.write_lsappinfo(<<~LIST)
+        2) "Google Chrome" ASN:0x0-0x2002:
+           bundleID="com.google.Chrome"
+           bundle path="#{chrome_app}"
+           pid = 8200 token=[sess=100015 pid=8200] type="Foreground" flavor=3
+      LIST
+      h.mark_pid_alive(8200)
+      h.write_log("==> Upgrading google-drive\nError: sudo failed\n")
+
+      output, status = h.apply(
+        exit_status: 1,
+        services:    ["redis", "com.example.agent"],
+        apps:        apps,
+      )
 
       assert_predicate status, :success?, output
-      assert_includes output, "Skipping restarts: Homebrew autoupdate exited with status 1."
-      assert_empty h.recorded_calls
+      assert_includes output, "Homebrew autoupdate exited with status 1; restarting configured apps and services..."
+      assert_includes output, "Relaunching UI app 'Google Drive' (was running before update)..."
+      assert_includes output, "Restarting UI app 'Google Chrome'..."
+      assert_includes output, "Skipping UI app 'WhatsApp' (was not running before update)."
+
+      calls = h.recorded_calls
+      assert_includes calls, "brew:services restart redis"
+      assert_includes calls, "launchctl:kickstart -k gui/501/com.example.agent"
+      assert_includes calls, "open:-g #{drive_app}"
+      assert_includes calls, "osascript:quit-id:com.google.Chrome"
+      assert_includes calls, "open:-g #{chrome_app}"
+    end
+  end
+
+  def test_ensures_stopped_apps_and_services_restart_when_run_fails_before_upgrades
+    with_harness do |h|
+      drive_app = h.create_app_bundle("Google Drive.app")
+      chrome_app = h.create_app_bundle("Google Chrome.app")
+      h.write_lsappinfo(<<~LIST)
+        1) "Google Drive" ASN:0x0-0x1001:
+           bundleID="com.google.drivefs"
+           bundle path="#{drive_app}"
+           pid = 9100 token=[sess=100015 pid=9100] type="UIElement" flavor=3
+        2) "Google Chrome" ASN:0x0-0x2002:
+           bundleID="com.google.Chrome"
+           bundle path="#{chrome_app}"
+           pid = 9200 token=[sess=100015 pid=9200] type="Foreground" flavor=3
+      LIST
+      h.write_brew_services(<<~SERVICES)
+        Name       Status  User   File
+        redis      started sourav ~/Library/LaunchAgents/homebrew.mxcl.redis.plist
+        postgresql stopped sourav ~/Library/LaunchAgents/homebrew.mxcl.postgresql.plist
+      SERVICES
+      h.write_launchctl_targets([
+        "gui/501/com.example.running:running",
+        "gui/501/com.example.stopped:not running",
+      ])
+
+      apps = ["Google Drive", "Google Chrome"]
+      _, snap_status = h.snapshot(apps: apps)
+      assert_predicate snap_status, :success?
+
+      # Only Google Drive stopped; Google Chrome is still running; no upgrades logged.
+      h.write_lsappinfo(<<~LIST)
+        2) "Google Chrome" ASN:0x0-0x2002:
+           bundleID="com.google.Chrome"
+           bundle path="#{chrome_app}"
+           pid = 9200 token=[sess=100015 pid=9200] type="Foreground" flavor=3
+      LIST
+      h.write_log("Error: Could not resolve host: github.com\n")
+
+      output, status = h.apply(
+        exit_status: 1,
+        services:    ["redis", "postgresql", "com.example.running", "com.example.stopped"],
+        apps:        apps,
+      )
+
+      assert_predicate status, :success?, output
+      assert_includes output,
+                      "Homebrew autoupdate exited with status 1; ensuring configured apps and services are running..."
+      assert_includes output, "Skipping service 'redis' (already running; no upgrades were applied)."
+      assert_includes output, "Restarting service 'postgresql' via brew services..."
+      assert_includes output, "Skipping service 'com.example.running' (already running; no upgrades were applied)."
+      assert_includes output,
+                      "Restarting service 'com.example.stopped' via launchctl (gui/501/com.example.stopped)..."
+      assert_includes output, "Relaunching UI app 'Google Drive' (was running before update)..."
+      assert_includes output, "Skipping UI app 'Google Chrome' (still running; no upgrades were applied)."
+
+      calls = h.recorded_calls
+      assert_includes calls, "brew:services restart postgresql"
+      assert_includes calls, "launchctl:kickstart -k gui/501/com.example.stopped"
+      assert_includes calls, "open:-g #{drive_app}"
+      refute_includes calls, "brew:services restart redis"
+      refute_includes calls, "launchctl:kickstart -k gui/501/com.example.running"
+      refute(calls.any? { |c| c.include?("Google Chrome") })
     end
   end
 
@@ -400,8 +508,17 @@ class RestartTest < Minitest::Test
       SH
       write_stub("launchctl", <<~SH)
         if [[ "$1" == "print" ]]; then
-          grep -Fxq "$2" "#{@launchctl_targets_file}"
-          exit $?
+          if grep -Fxq "$2" "#{@launchctl_targets_file}"; then
+            echo "state = running"
+            exit 0
+          fi
+          line=$(grep -F "$2:" "#{@launchctl_targets_file}" | head -n 1)
+          if [[ -n "$line" ]]; then
+            state="${line#*:}"
+            echo "state = $state"
+            exit 0
+          fi
+          exit 113
         fi
         echo "launchctl:$*" >> "#{@calls_file}"
       SH

@@ -81,8 +81,13 @@ brew autoupdate start 12h --upgrade \
 ```
 
 Restarts the specified macOS UI applications and/or background services after
-an autoupdate run upgrades one or more packages (skipped when everything is
-already up-to-date or when the run fails). Requires `--upgrade`.
+an autoupdate run upgrades one or more packages (skipped on successful runs
+when everything is already up-to-date). If a run fails after upgrades were
+attempted (for example, a cask upgrade quit an app and then failed or rolled
+back), configured apps and services are still restarted/relaunched so at least
+the previous version comes back up; if a failure happens before any upgrade
+starts, only apps or services that ended up stopped are started again.
+Requires `--upgrade`.
 
 - **`--restart-apps=`**: Accepts comma-separated app names (e.g. `Raycast`,
   `Visual Studio Code`), `.app` bundle names/paths (e.g.
